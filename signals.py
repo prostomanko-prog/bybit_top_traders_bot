@@ -1,101 +1,142 @@
 from datetime import datetime
 import requests
 
-from bybit_leaderboard import get_top_traders, BASE_URL
+COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 
-# Настройки
-SYMBOL = "BTCUSDT"
-CATEGORY = "linear"
+# Монеты: бинанский стиль тикера -> CoinGecko id
+COINS = {
+    "BTCUSDT": "bitcoin",
+    "ETHUSDT": "ethereum",
+}
 
 SL_PCT = 0.015   # 1.5%
 TP1_PCT = 0.025  # 2.5%
-TP2_PCT = 0.04   # 4%
+TP2_PCT = 0.04   # 4.0%
 LEVERAGE = 5     # рекомендуемое плечо
 
 
-def get_price(symbol=SYMBOL, category=CATEGORY):
+def get_prices(coin_id: str, vs_currency: str = "usd", days: int = 1):
     """
-    Берём текущую цену по фьючам с Bybit.
+    Берём историю цен с CoinGecko за N дней.
+    Возвращаем список close-цен.
     """
-    url = f"{BASE_URL}/v5/market/tickers"
-    params = {"category": category, "symbol": symbol}
-    r = requests.get(url, params=params, timeout=10)
+    url = f"{COINGECKO_BASE}/coins/{coin_id}/market_chart"
+    params = {"vs_currency": vs_currency, "days": days}
+    r = requests.get(url, params=params, timeout=15)
     r.raise_for_status()
     data = r.json()
+    prices = [p[1] for p in data.get("prices", [])]
+    return prices
 
-    if data["retCode"] != 0:
-        raise RuntimeError(f"Bybit price error: {data['retMsg']}")
 
-    tick = data["result"]["list"][0]
-    return float(tick["lastPrice"])
+def ema(values, period):
+    k = 2 / (period + 1)
+    ema_val = values[0]
+    for v in values[1:]:
+        ema_val = v * k + ema_val * (1 - k)
+    return ema_val
+
+
+def rsi(values, period=14):
+    if len(values) < period + 1:
+        return None
+
+    gains = []
+    losses = []
+    for i in range(1, len(values)):
+        diff = values[i] - values[i - 1]
+        if diff >= 0:
+            gains.append(diff)
+            losses.append(0.0)
+        else:
+            gains.append(0.0)
+            losses.append(-diff)
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(values) - 1):
+        diff = values[i + 1] - values[i]
+        gain = max(diff, 0.0)
+        loss = max(-diff, 0.0)
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - 100.0 / (1 + rs)
 
 
 def generate_signals():
     """
-    Логика:
-    - Берём топ-трейдеров
-    - Считаем, сколько за LONG / SHORT
-    - Если >=3 в одну сторону и перевес — даём сигнал
+    Для каждой монеты:
+    - тянем историю цен
+    - считаем EMA20/EMA50
+    - ищем пересечение + фильтр по RSI
+    - формируем сигнал LONG/SHORT, SL/TP
     """
-
     signals = []
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-    try:
-        traders = get_top_traders(limit=10)
-    except Exception as e:
-        print("Error load traders:", repr(e), flush=True)
-        return signals
+    for symbol, coin_id in COINS.items():
+        try:
+            closes = get_prices(coin_id, days=1)
+        except Exception as e:
+            print(f"Error load prices for {symbol}:", repr(e), flush=True)
+            continue
 
-    long_votes = 0
-    short_votes = 0
+        if len(closes) < 60:
+            continue
 
-    for t in traders:
-        side_raw = (t.get("side") or "").upper()  # BUY / SELL / LONG / SHORT
-        if side_raw in ("BUY", "LONG"):
-            long_votes += 1
-        elif side_raw in ("SELL", "SHORT"):
-            short_votes += 1
+        # предыдущие и текущие EMA
+        ema20_prev = ema(closes[:-1], 20)
+        ema50_prev = ema(closes[:-1], 50)
+        ema20_curr = ema(closes, 20)
+        ema50_curr = ema(closes, 50)
 
-    direction = None
-    if long_votes >= 3 and long_votes > short_votes:
-        direction = "LONG"
-    elif short_votes >= 3 and short_votes > long_votes:
-        direction = "SHORT"
+        rsi_val = rsi(closes, 14)
+        if rsi_val is None:
+            continue
 
-    if not direction:
-        return signals
+        price = closes[-1]
 
-    try:
-        price = get_price()
-    except Exception as e:
-        print("Error load price:", repr(e), flush=True)
-        return signals
+        direction = None
+        # пересечение вверх + RSI бычий
+        if ema20_prev < ema50_prev and ema20_curr > ema50_curr and rsi_val > 55:
+            direction = "LONG"
+        # пересечение вниз + RSI медвежий
+        elif ema20_prev > ema50_prev and ema20_curr < ema50_curr and rsi_val < 45:
+            direction = "SHORT"
 
-    entry = price
+        if not direction:
+            continue
 
-    if direction == "LONG":
-        sl = round(entry * (1 - SL_PCT), 2)
-        tp1 = round(entry * (1 + TP1_PCT), 2)
-        tp2 = round(entry * (1 + TP2_PCT), 2)
-    else:  # SHORT
-        sl = round(entry * (1 + SL_PCT), 2)
-        tp1 = round(entry * (1 - TP1_PCT), 2)
-        tp2 = round(entry * (1 - TP2_PCT), 2)
+        entry = price
 
-    signals.append(
-        {
-            "symbol": SYMBOL,
-            "direction": direction,
-            "entry": round(entry, 2),
-            "sl": sl,
-            "tp1": tp1,
-            "tp2": tp2,
-            "leverage": LEVERAGE,
-            "long_votes": long_votes,
-            "short_votes": short_votes,
-            "time": now,
-        }
-    )
+        if direction == "LONG":
+            sl = round(entry * (1 - SL_PCT), 2)
+            tp1 = round(entry * (1 + TP1_PCT), 2)
+            tp2 = round(entry * (1 + TP2_PCT), 2)
+        else:  # SHORT
+            sl = round(entry * (1 + SL_PCT), 2)
+            tp1 = round(entry * (1 - TP1_PCT), 2)
+            tp2 = round(entry * (1 - TP2_PCT), 2)
+
+        signals.append(
+            {
+                "symbol": symbol,
+                "direction": direction,
+                "entry": round(entry, 2),
+                "sl": sl,
+                "tp1": tp1,
+                "tp2": tp2,
+                "leverage": LEVERAGE,
+                "rsi": round(rsi_val, 1),
+                "ema_fast": round(ema20_curr, 2),
+                "ema_slow": round(ema50_curr, 2),
+                "time": now,
+            }
+        )
 
     return signals
