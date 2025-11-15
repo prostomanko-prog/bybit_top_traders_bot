@@ -14,20 +14,21 @@ CHAT_ID = int(CHAT_ID)
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
 
-CHECK_INTERVAL = 60  # проверяем раз в 60 сек
+CHECK_INTERVAL = 300  # проверяем раз в 5 минут
 
 
 def send_signal(sig):
     text = (
-        "🔥 <b>Сигнал от топ-трейдеров Bybit</b>\n\n"
-        f"Монета: <b>{sig['symbol']}</b> (Perpetual)\n"
+        "🔥 <b>Сигнал по теханализу (CoinGecko)</b>\n\n"
+        f"Монета: <b>{sig['symbol']}</b>\n"
         f"Направление: <b>{sig['direction']}</b>\n"
         f"Цена входа: <b>{sig['entry']}</b>\n\n"
         f"Стоп-лосс: <b>{sig['sl']}</b> (≈ -1.5%)\n"
         f"Тейк-профит 1: <b>{sig['tp1']}</b> (≈ +2.5%)\n"
         f"Тейк-профит 2: <b>{sig['tp2']}</b> (≈ +4.0%)\n\n"
         f"Рекомендуемое плечо: <b>x{sig['leverage']}</b>\n"
-        f"Топ-трейдеры: <b>{sig['long_votes']} LONG / {sig['short_votes']} SHORT</b>\n"
+        f"RSI(14): <b>{sig['rsi']}</b>\n"
+        f"EMA20: <b>{sig['ema_fast']}</b> | EMA50: <b>{sig['ema_slow']}</b>\n"
         f"⏱ {sig['time']} UTC"
     )
     bot.send_message(chat_id=CHAT_ID, text=text)
@@ -35,17 +36,18 @@ def send_signal(sig):
 
 def main_loop():
     print("Bot started...", flush=True)
-    last_direction = None
+    last_direction = {}  # по монете
 
     while True:
         try:
             sigs = generate_signals()
-            if sigs:
-                sig = sigs[0]
+            for sig in sigs:
+                sym = sig["symbol"]
+                direction = sig["direction"]
 
-                # антиспам — шлём только если направление поменялось
-                if sig["direction"] != last_direction:
-                    last_direction = sig["direction"]
+                # антиспам: сигнал только если направление по монете изменилось
+                if last_direction.get(sym) != direction:
+                    last_direction[sym] = direction
                     send_signal(sig)
 
         except Exception as e:
