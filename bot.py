@@ -14,7 +14,8 @@ CHAT_ID = int(CHAT_ID)
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
 
-CHECK_INTERVAL = 300  # проверяем раз в 5 минут
+# каждые 5 минут проверяем рынок
+CHECK_INTERVAL = 300
 
 
 def send_signal(sig):
@@ -32,11 +33,23 @@ def send_signal(sig):
         f"⏱ {sig['time']} UTC"
     )
     bot.send_message(chat_id=CHAT_ID, text=text)
+    print(f"Sent signal for {sig['symbol']} {sig['direction']}", flush=True)
 
 
 def main_loop():
     print("Bot started...", flush=True)
-    last_direction = {}  # по монете
+
+    # 🔥 ТЕСТОВОЕ СООБЩЕНИЕ ПРИ СТАРТЕ
+    try:
+        bot.send_message(
+            CHAT_ID,
+            "🧪 Тест: Я работаю,заебал"
+        )
+        print("Test message sent", flush=True)
+    except Exception as e:
+        print("Error sending test message:", repr(e), flush=True)
+
+    last_direction = {}  # последнее направление по каждой монете
 
     while True:
         try:
@@ -45,7 +58,7 @@ def main_loop():
                 sym = sig["symbol"]
                 direction = sig["direction"]
 
-                # антиспам: сигнал только если направление по монете изменилось
+                # антиспам — только если направление по монете изменилось
                 if last_direction.get(sym) != direction:
                     last_direction[sym] = direction
                     send_signal(sig)
