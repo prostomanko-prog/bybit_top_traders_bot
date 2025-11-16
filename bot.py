@@ -20,7 +20,7 @@ CHECK_INTERVAL = 300
 
 def send_signal(sig):
     text = (
-        "🔥 <b>Сигнал по теханализу (CoinGecko)</b>\n\n"
+        "🔥 <b>Сигнал</b>\n\n"
         f"Монета: <b>{sig['symbol']}</b>\n"
         f"Направление: <b>{sig['direction']}</b>\n"
         f"Цена входа: <b>{sig['entry']}</b>\n\n"
